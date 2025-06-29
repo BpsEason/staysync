@@ -1,0 +1,45 @@
+FROM php:8.2-fpm-alpine
+
+# Install system dependencies
+RUN apk add --no-cache \
+    git \
+    curl \
+    unzip \
+    libzip \
+    libpng-dev \
+    libjpeg-turbo-dev \
+    supervisor \
+    postgresql-dev \
+    oniguruma-dev \
+    build-base \
+    nginx # Nginx for Laravel's local health check if needed, or remove if php-fpm is enough
+
+# Install PHP extensions
+RUN docker-php-ext-install pdo_mysql opcache zip pdo_pgsql mbstring exif pcntl bcmath
+RUN docker-php-ext-configure gd --with-jpeg=/usr/lib/ --with-webp=/usr/lib/
+RUN docker-php-ext-install gd
+
+# Install Redis extension
+RUN pecl install -o -f redis \
+    &&  rm -rf /tmp/pear \
+    &&  docker-php-ext-enable redis
+
+# Install Composer
+COPY --from=composer:latest /usr/bin/composer /usr/local/bin/composer
+
+WORKDIR /var/www/html
+
+# Copy application code
+COPY backend/composer.json backend/composer.lock ./
+# Install production dependencies only
+RUN composer install --no-dev --optimize-autoloader
+
+COPY backend .
+RUN chown -R www-data:www-data /var/www/html/storage /var/www/html/bootstrap/cache
+RUN chmod -R 775 /var/www/html/storage /var/www/html/bootstrap/cache
+
+# Expose port 9000 for FPM
+EXPOSE 9000
+
+# Start PHP-FPM
+CMD ["php-fpm"]

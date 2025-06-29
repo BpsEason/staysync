@@ -1,0 +1,225 @@
+version: '3.8'
+services:
+  nginx:
+    image: nginx:latest
+    container_name: staysync_nginx
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./docker/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./docker/nginx/certs:/etc/nginx/certs:ro # Mount SSL certs
+    depends_on:
+      laravel:
+        condition: service_healthy
+      fastapi:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/health"] # Nginx serves its own health check
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - webnet
+
+  laravel:
+    build:
+      context: .
+      dockerfile: Dockerfile.laravel
+    container_name: staysync_laravel
+    environment:
+      - APP_ENV=local # Keep local for dev
+      - APP_KEY=base64:YOUR_APP_KEY_HERE # IMPORTANT: Generate this with 'php artisan key:generate'
+      - JWT_SECRET=YOUR_JWT_SECRET_HERE # IMPORTANT: Generate this with 'php artisan jwt:secret'
+      - DB_CONNECTION=mysql
+      - DB_HOST=mysql
+      - DB_PORT=3306
+      - DB_DATABASE=staysync
+      - DB_USERNAME=root
+      - DB_PASSWORD=secret
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=null
+      - QUEUE_CONNECTION=rabbitmq
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_VHOST=/
+      - RABBITMQ_LOGIN=guest
+      - RABBITMQ_PASSWORD=guest
+      - FASTAPI_PRICING_URL=http://fastapi:8000 # Internal URL for Laravel to call FastAPI
+    volumes:
+      - ./backend:/var/www/html
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/health"] # Laravel /health endpoint (served by PHP-FPM directly or via Nginx sidecar)
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - webnet
+
+  fastapi:
+    build:
+      context: .
+      dockerfile: Dockerfile.fastapi
+    container_name: staysync_fastapi
+    environment:
+      - REDIS_HOST=redis
+      - RABBITMQ_HOST=rabbitmq
+      - RABBITMQ_PORT=5672
+      - RABBITMQ_USER=guest
+      - RABBITMQ_PASSWORD=guest
+      - INFLUXDB_URL=http://influxdb:8086
+      - INFLUXDB_TOKEN=your-token # Replace with a real token
+      - INFLUXDB_ORG=staysync
+      - INFLUXDB_BUCKET=iot
+      - MQTT_BROKER_HOST=emqx
+      - MQTT_BROKER_PORT=1883
+      - INFURA_URL=http://ganache:8545 # Use local Ganache for dev
+      - WALLET_PRIVATE_KEY=0x... # Replace with a private key from Ganache
+      - CONTRACT_ADDRESS=0x... # Replace with your deployed contract address
+      - CONTRACT_ABI=[] # Replace with your contract ABI JSON string
+    volumes:
+      - ./fastapi/app:/app/app
+    depends_on:
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      influxdb:
+        condition: service_healthy
+      emqx:
+        condition: service_healthy
+      ganache:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"] # FastAPI /health endpoint
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - webnet
+
+  frontend: # Assuming Vue CLI / Vite dev server
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile # Frontend Dockerfile will need to be created too
+    container_name: staysync_frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules # Mount node_modules from container
+    command: npm run dev -- --host 0.0.0.0 # Run dev server
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - webnet
+
+  mysql:
+    image: mysql:8.0
+    container_name: staysync_mysql
+    environment:
+      - MYSQL_ROOT_PASSWORD=secret
+      - MYSQL_DATABASE=staysync
+      - MYSQL_USER=staysync_user
+      - MYSQL_PASSWORD=password
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - webnet
+  
+  redis:
+    image: redis:7.0-alpine
+    container_name: staysync_redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - webnet
+
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: staysync_rabbitmq
+    ports:
+      - "5672:5672" # AMQP port
+      - "15672:15672" # Management UI
+    healthcheck:
+      test: ["CMD", "rabbitmqctl", "status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - webnet
+  
+  influxdb:
+    image: influxdb:2.7
+    container_name: staysync_influxdb
+    environment:
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=admin
+      - DOCKER_INFLUXDB_INIT_PASSWORD=secret
+      - DOCKER_INFLUXDB_INIT_ORG=staysync
+      - DOCKER_INFLUXDB_INIT_BUCKET=iot
+      - DOCKER_INFLUXDB_INIT_ADMIN_TOKEN=your-token # Replace with a real token
+    ports:
+      - "8086:8086" # InfluxDB UI/API
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8086/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - webnet
+  
+  emqx:
+    image: emqx/emqx:latest
+    container_name: staysync_emqx
+    ports:
+      - "1883:1883" # MQTT
+      - "8083:8083" # MQTT/WS
+      - "18083:18083" # Dashboard
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:18083/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - webnet
+
+  ganache: # Local Ethereum Blockchain for development/testing
+    image: trufflesuite/ganache-cli:latest
+    container_name: staysync_ganache
+    command: ["--port", "8545", "--accounts", "10", "--defaultBalanceEther", "100", "--mnemonic", "candy maple cake sugar pudding cream honey rich smooth crumble sweet treat"]
+    ports:
+      - "8545:8545"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8545"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    networks:
+      - webnet
+
+volumes:
+  mysql_data:
+
+networks:
+  webnet:
+    driver: bridge

@@ -1,0 +1,107 @@
+# k8s/production.yml - Example Kubernetes Deployment for Production
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: staysync-production
+  namespace: default
+spec:
+  replicas: 3 # Scale for production
+  selector:
+    matchLabels:
+      app: staysync
+      track: production
+  template:
+    metadata:
+      labels:
+        app: staysync
+        track: production
+    spec:
+      containers:
+        - name: laravel
+          image: staysync/laravel:latest # Use 'latest' or specific release tag for production
+          ports:
+            - containerPort: 9000
+          envFrom:
+            - secretRef:
+                name: laravel-env-secret
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 9000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+        - name: fastapi
+          image: staysync/fastapi:latest
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - secretRef:
+                name: fastapi-env-secret
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+        # Add frontend container here if it's served by Nginx in the same pod, or separately
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: staysync-production-service
+spec:
+  selector:
+    app: staysync
+    track: production
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80 # Nginx container port
+  type: ClusterIP # Or NodePort/LoadBalancer
+---
+# Ingress to route 100% traffic to Production (after Canary passes)
+# apiVersion: networking.k8s.io/v1
+# kind: Ingress
+# metadata:
+#   name: staysync-ingress
+#   annotations:
+#     nginx.ingress.kubernetes.io/canary: "false" # Turn off canary routing
+# spec:
+#   ingressClassName: nginx
+#   rules:
+#     - host: your-production-domain.com
+#       http:
+#         paths:
+#           - path: /
+#             pathType: Prefix
+#             backend:
+#               service:
+#                 name: staysync-production-service # Production service
+#                 port:
+#                   number: 80

@@ -1,0 +1,95 @@
+# k8s/canary.yml - Example Kubernetes Deployment for Canary Release
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: staysync-canary
+  namespace: default # Or a dedicated 'canary' namespace
+spec:
+  replicas: 1 # Start with a small number of replicas for canary
+  selector:
+    matchLabels:
+      app: staysync
+      track: canary
+  template:
+    metadata:
+      labels:
+        app: staysync
+        track: canary
+    spec:
+      containers:
+        - name: laravel
+          image: staysync/laravel:${{ github.sha }} # Use specific commit SHA for canary
+          ports:
+            - containerPort: 9000
+          envFrom:
+            - secretRef:
+                name: laravel-env-secret # Kubernetes secret for environment variables
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 9000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+        - name: fastapi
+          image: staysync/fastapi:${{ github.sha }} # Use specific commit SHA for canary
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - secretRef:
+                name: fastapi-env-secret
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: staysync-canary-service
+spec:
+  selector:
+    app: staysync
+    track: canary
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80 # Nginx container port
+  type: ClusterIP # Or NodePort/LoadBalancer for testing direct access
+---
+# Ingress setup to route a percentage of traffic to Canary
+# This would typically use an Ingress Controller like Nginx Ingress or Istio
+# Example with Nginx Ingress (requires Nginx Ingress Controller installed):
+# apiVersion: networking.k8s.io/v1
+# kind: Ingress
+# metadata:
+#   name: staysync-ingress
+#   annotations:
+#     nginx.ingress.kubernetes.io/canary: "true"
+#     nginx.ingress.kubernetes.io/canary-weight: "10" # 10% traffic to canary
+# spec:
+#   ingressClassName: nginx
+#   rules:
+#     - host: your-production-domain.com
+#       http:
+#         paths:
+#           - path: /
+#             pathType: Prefix
+#             backend:
+#               service:
+#                 name: staysync-canary-service # Canary service
+#                 port:
+#                   number: 80
