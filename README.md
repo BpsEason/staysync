@@ -826,12 +826,4 @@ PHP 8.x 帶來了 JIT、屬性（Attributes）和更強的類型系統，大幅�
 
 StaySync 的多技術棧（PHP、Python、JS）讓我能跨領域學習，並將新技術融入專案。
 
----
-
-## 聯繫方式
-
-有問題或建議？請開 Issue 或聯繫我：  
-📧 [bps.eason@gmail.com](mailto:bps.eason@gmail.com)  
-🐦 X: [@BpsEason](https://x.com/BpsEason)
-
 **感謝你的關注！讓我們一起打造更穩健的 StaySync！**
