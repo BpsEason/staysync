@@ -33,36 +33,36 @@ StaySync 是一個專為酒店業打造的多租戶 SaaS 平台，結合 Laravel
 
 ```mermaid
 graph TD
-    subgraph Web Client
-        A1[🌐 Client Browser]
-        A2[📱 Vue 3 Frontend (多語言 Portal + Admin)]
+    subgraph WebClient
+        A1[Client Browser]
+        A2[Vue 3 Frontend: Portal + Admin]
         A1 --> A2
     end
 
-    subgraph API Gateway
-        B[Nginx: Reverse Proxy / SSL / 租戶路由]
+    subgraph APIGateway
+        B[Nginx: Proxy / SSL / Multi-tenant Routing]
     end
 
-    subgraph Laravel Backend
+    subgraph LaravelBackend
         C1[Laravel: RBAC / Booking / Property / SEO / Culture]
-        C2[📦 Redis: Cache / Session]
-        C3[🗄️ MySQL: Tenant Data / Bookings / Users]
+        C2[Redis: Cache / Session]
+        C3[MySQL: Tenant Data / Bookings / Users]
         C1 --> C2
         C1 --> C3
     end
 
-    subgraph FastAPI Microservices
-        D1[FastAPI: IoT Control + Dynamic Pricing + Blockchain]
-        D2[InfluxDB: IoT 時序資料]
-        D3[Ganache: 模擬區塊鏈]
+    subgraph FastAPIMicroservices
+        D1[FastAPI: IoT + Pricing + Blockchain]
+        D2[InfluxDB: Time-Series Data]
+        D3[Ganache: Local Blockchain]
         D4[EMQX: MQTT Broker]
         D1 --> D2
         D1 --> D3
         D1 --> D4
     end
 
-    subgraph Messaging Layer
-        E[RabbitMQ (Topic Exchange)]
+    subgraph MessagingLayer
+        E[RabbitMQ: Topic Exchange]
     end
 
     %% Communication Paths
@@ -70,8 +70,9 @@ graph TD
     B -->|/api/v1/*| C1
     B -->|/fastapi/*| D1
     A2 -->|WebSocket| D1
-    C1 -->|Queue| E
-    D1 -->|Consume/Produce| E
+    C1 -->|Produce| E
+    D1 -->|Consume| E
+
 
 ```
 
