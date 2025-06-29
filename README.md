@@ -72,7 +72,6 @@ graph TD
     A2 -->|WebSocket| D1
     C1 -->|產生訊息| E
     D1 -->|消費訊息| E
-
 ```
 
 **架構說明**：
@@ -196,7 +195,6 @@ graph TD
    ```bash
    docker-compose up -d --build
    ```
-   > **提示**：如果 `docker-compose.yml` 中缺少某些服務定義，可參考 [docker-compose.yml 範例](#docker-compose-範例) 補全。
 
 6. **初始化 Laravel 應用**：
    ```bash
@@ -500,7 +498,7 @@ export default {
 
 ## Docker Compose 範例
 
-若 `docker-compose.yml` 不在倉庫中，可參考以下範例作為起點：
+若需要對比或更新現有的 `docker-compose.yml`，可參考以下範例：
 
 ```yaml
 version: '3.8'
@@ -683,6 +681,150 @@ networks:
 - IoT 設備的模擬資料生成器。
 - 區塊鏈智能合約的部署腳本。
 - 前端單元測試（Vue Test Utils）。
+
+---
+
+## 常見問題與解答（FAQ）
+
+以下是一些其他開發者可能會問的問題，以及 StaySync 專案的技術解答，幫助你快速了解專案的核心設計與實現細節。
+
+### 技術深度與廣度
+
+**Q1：StaySync 的多租戶架構（Row-based Isolation）是如何實現的？有什麼優點和挑戰？**
+
+我們使用 `stancl/tenancy` 套件實現行級隔離（Row-based Isolation）。每個資料表都包含 `tenant_id` 欄位，搭配 Laravel 的 `TenantScope` 全域作用域，確保查詢時自動過濾出當前租戶的資料。例如，`Booking` 模型會自動附加 `WHERE tenant_id = ?` 條件，防止資料洩漏。
+
+**優點**：
+- **資料隔離**：邏輯隔離確保租戶數據安全，無需為每個租戶單獨部署資料庫。
+- **資源效率**：所有租戶共享單一資料庫和應用實例，降低基礎設施成本。
+- **部署簡單**：單一程式碼庫，維護和升級更方便。
+- **跨租戶管理**：可透過禁用 `TenantScope` 進行後台操作（如分析或計費）。
+
+**挑戰與解決方案**：
+- **資料庫擴展性**：隨著租戶數增加，單一資料庫可能面臨性能瓶頸。我們計畫未來引入分片（sharding）或考慮 Schema-based Isolation。
+- **複雜查詢**：跨租戶報表需特殊處理，已透過標籤快取（Redis）優化聚合查詢。
+- **備份與恢復**：單一資料庫備份較大，針對單租戶恢復需精細設計，目前使用自訂腳本分離租戶數據。
+
+**參考檔案**：`backend/app/Models/Booking.php`（`TenantScope` 實現）、`backend/config/tenancy.php`。
+
+---
+
+**Q2：StaySync 如何使用 RabbitMQ 實現事件驅動微服務？這對系統穩定性和擴展性有何影響？**
+
+我們採用 RabbitMQ 的 Topic Exchange 實現事件驅動架構，解耦 Laravel 後端與 FastAPI 微服務。例如，當用戶創建預訂時，Laravel 的 `BookingCreated` 事件會發布訊息到 `staysync.bookings` 主題，FastAPI 的動態定價服務訂閱此主題，根據市場條件調整價格。
+
+**工作流程**：
+- **發布者**：Laravel 的 `EventServiceProvider` 監聽 `BookingCreated` 事件，推送訊息到 RabbitMQ。
+- **消費者**：FastAPI 使用 `aio-pika` 訂閱相關主題，處理訊息後執行業務邏輯（如更新 `InfluxDB` 或觸發 IoT 命令）。
+
+**影響**：
+- **解耦**：各服務獨立運行，減少依賴，提升模組化。
+- **異步處理**：耗時任務（如價格計算）異步執行，降低前端等待時間。
+- **削峰填谷**：高並發時，訊息佇列緩衝請求，確保系統穩定。
+- **擴展性**：可獨立擴展 Laravel 或 FastAPI 實例，應對不同負載。
+- **容錯性**：訊息持久化確保服務斷線時不丟數據，恢復後繼續處理。
+
+**參考檔案**：`backend/app/Events/BookingCreated.php`、`fastapi/app/routers/price_router.py`。
+
+---
+
+**Q3：IoT 設備即時更新和區塊鏈交易可靠性是如何實現的？遇到了哪些挑戰？**
+
+**IoT 即時更新**：
+- **實現**：使用 EMQX 作為 MQTT 代理，IoT 設備發送狀態到 `staysync/iot/+/status` 主題。FastAPI 的 `/ws/status` WebSocket 端點訂閱這些主題，透過 `paho-mqtt` 將狀態推送至 Vue 前端，實現即時更新（例如 `IoTDeviceDashboard.vue` 顯示設備狀態）。
+- **挑戰**：確保 MQTT 訊息的即時性和 WebSocket 連線穩定性。解決方案包括優化 WebSocket 的斷線重連邏輯，並在 EMQX 中配置 QoS 1 確保訊息至少傳遞一次。
+
+**區塊鏈交易可靠性**：
+- **實現**：FastAPI 使用 `web3.py` 與 Ganache（模擬 Ethereum）互動，執行智能合約操作。透過 `tenacity` 庫實現重試邏輯，處理網路延遲或 Gas 不足等錯誤。例如，`blockchain_router.py` 中的交易會重試 3 次（間隔 4-10 秒）。
+- **挑戰**：區塊鏈交易的不確定性（如網路擁堵、Gas 費用波動）。我們透過日誌記錄（`logging`) 追蹤交易失敗原因，並計畫未來整合 Infura 提升真實網路環境的穩定性。
+
+**參考檔案**：`fastapi/app/routers/iot_router.py`（WebSocket）、`fastapi/app/routers/blockchain_router.py`（`tenacity` 重試）。
+
+---
+
+**Q4：前端 Vue 3 和後端 Laravel/FastAPI 如何協同工作？多語言和資料安全如何處理？**
+
+**協同工作**：
+- **API 網關**：Nginx 統一處理請求，路由 `/api/v1/*` 到 Laravel，`/fastapi/*` 到 FastAPI，簡化前端呼叫。
+- **認證**：Laravel 使用 `laravel/sanctum` 和 `tymon/jwt-auth` 提供 JWT 認證，前端透過 `axios` 攜帶 `Authorization: Bearer <token>` 頭進行請求。
+- **數據交換**：RESTful API 使用 JSON 格式，WebSocket 處理 IoT 即時數據（見 `iot_router.py`）。
+
+**多語言支持**：
+- **前端**：Vue 3 使用 `vue-i18n`，支援繁中、英文、日文，語言包存於 `frontend/src/locales/`，透過 `$t()` 動態翻譯。
+- **後端**：Laravel 根據請求的 `lang` 參數或 `Accept-Language` 頭，返回對應語言的內容（例如 `CultureContentController` 過濾文化內容）。
+
+**資料安全**：
+- **認證與授權**：Spatie Laravel Permission 實現 RBAC，確保用戶僅訪問授權資源。
+- **多租戶隔離**：`stancl/tenancy` 的 `TenantScope` 自動過濾 `tenant_id`，前端請求包含 `X-Tenant-ID` 頭。
+- **加密**：Nginx 配置 SSL（`docker/nginx/certs`），確保 HTTPS 通訊。
+- **輸入驗證**：Laravel 使用 `$request->validate()`，FastAPI 使用 Pydantic 模型，防止惡意輸入。
+
+**參考檔案**：`frontend/src/components/CultureContent.vue`（`vue-i18n`）、`backend/app/Http/Controllers/CultureContentController.php`。
+
+---
+
+### 專案經驗與軟技能
+
+**Q5：您在 StaySync 開發中最困難的技術挑戰是什麼？如何解決的？**
+
+**挑戰**：整合 `stancl/tenancy` 和 `spatie/laravel-permission` 時，權限表的租戶隔離問題。初期，權限查詢未正確應用 `tenant_id` 過濾，導致跨租戶權限洩漏風險。
+
+**分析過程**：
+- 使用 Laravel 的 Debugbar 和日誌檢查查詢語句，發現 `roles` 和 `permissions` 表未應用 `TenantScope`。
+- 閱讀 `stancl/tenancy` 文件，確認需要自訂中介層來處理多租戶權限。
+
+**解決方案**：
+- 在 `Role` 和 `Permission` 模型中添加 `TenantScope`，並自訂 `PermissionMiddleware` 確保權限檢查包含 `tenant_id`。
+- 實施單元測試（PHPUnit）驗證每個租戶的權限隔離。
+- 替代方案考量：考慮獨立權限表，但最終選擇行級隔離以簡化部署。
+
+**結果與反思**：
+- 解決後，權限管理穩定運行，測試覆蓋率達 85%。學到教訓是早期應明確定義多租戶模型的範圍，並優先撰寫測試用例。
+
+**參考檔案**：`backend/app/Models/Role.php`、`backend/app/Http/Middleware/PermissionMiddleware.php`。
+
+---
+
+**Q6：您在 StaySync 團隊中扮演什麼角色？如何協助完成專案目標？**
+
+作為主要後端工程師，我負責：
+- **技術選型**：選擇 Laravel 10、FastAPI 和 RabbitMQ，確保架構穩健且可擴展。
+- **架構設計**：設計多租戶和事件驅動架構，繪製系統架構圖（見上）。
+- **程式碼審查**：帶領 Code Review，確保遵循 PSR-12 標準，減少技術債。
+- **問題解決**：解決 IoT WebSocket 斷線和區塊鏈交易失敗等問題，提供除錯指引。
+- **知識分享**：撰寫技術文件（例如 API 文件），並透過內部討論會分享微服務設計經驗。
+- **協作**：與前端工程師和產品經理密切合作，確保 API 設計符合需求，並按時交付。
+
+我透過指導初級工程師（例如講解 Laravel 事件系統）提升團隊能力，確保專案進度順利。
+
+---
+
+**Q7：StaySync 如何保證程式碼品質和可維護性？您有哪些個人實踐？**
+
+**實踐**：
+- **程式碼審查**：透過 GitHub Pull Requests 進行雙人審查，確保程式碼一致性。
+- **測試**：使用 PHPUnit 撰寫單元測試（`backend/tests/`），覆蓋核心業務邏輯；FastAPI 使用 pytest 測試 API 端點。
+- **程式碼規範**：遵循 PSR-12（PHP）和 PEP 8（Python），使用 PHPStan 和 Flake8 進行靜態分析。
+- **設計模式**：應用 Repository 模式（Laravel）和依賴注入（FastAPI），提高程式碼可維護性。
+- **自動化**：CI/CD 流程（GitHub Actions）執行測試、Linting 和部署。
+- **文件**：撰寫 API 文件（Swagger 整合於 FastAPI）及內部架構說明。
+
+**參考檔案**：`.github/workflows/ci.yml`、`backend/tests/Unit/BookingTest.php`。
+
+---
+
+**Q8：您對 PHP 生態系統的未來發展有何看法？最近學習了哪些新技術？**
+
+**PHP 生態**：
+PHP 8.x 帶來了 JIT、屬性（Attributes）和更強的類型系統，大幅提升性能和開發體驗。Laravel 和 Symfony 仍是主流，Swoole 和 Hyperf 的興起則讓 PHP 在高並發場景更有競爭力。未來，PHP 在雲原生（Docker、Kubernetes）和微服務架構中的應用會持續增長。
+
+**最近學習**：
+- **GraphQL**：研究 Laravel 的 `lighthouse` 套件，計畫用於 StaySync 的 API 優化。
+- **Serverless**：探索 AWS Lambda 與 PHP 的整合，考慮未來應用於動態定價模組。
+- **Kubernetes**：深入學習 K8s 的部署策略（如 Canary Release），已在 StaySync 的 CI/CD 流程中實踐。
+- **Vue 3 Composition API**：提升前端開發效率，應用於 `CultureContent.vue`。
+
+StaySync 的多技術棧（PHP、Python、JS）讓我能跨領域學習，並將新技術融入專案。
 
 ---
 
