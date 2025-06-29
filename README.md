@@ -33,46 +33,45 @@ StaySync 是一個專為酒店業打造的多租戶 SaaS 平台，結合 Laravel
 
 ```mermaid
 graph TD
-    subgraph WebClient
-        A1[Client Browser]
-        A2[Vue 3 Frontend: Portal + Admin]
+    subgraph 用戶端
+        A1[瀏覽器（Client Browser）]
+        A2[Vue 3 前端：旅客入口 + 管理後台]
         A1 --> A2
     end
 
-    subgraph APIGateway
-        B[Nginx: Proxy / SSL / Multi-tenant Routing]
+    subgraph API 網關
+        B[Nginx：反向代理 / SSL / 多租戶路由]
     end
 
-    subgraph LaravelBackend
-        C1[Laravel: RBAC / Booking / Property / SEO / Culture]
-        C2[Redis: Cache / Session]
-        C3[MySQL: Tenant Data / Bookings / Users]
+    subgraph Laravel 核心後端
+        C1[Laravel：RBAC / 訂房 / 房源 / SEO / 文化模組]
+        C2[Redis：快取與 Session 管理]
+        C3[MySQL：租戶資料 / 訂單 / 用戶]
         C1 --> C2
         C1 --> C3
     end
 
-    subgraph FastAPIMicroservices
-        D1[FastAPI: IoT + Pricing + Blockchain]
-        D2[InfluxDB: Time-Series Data]
-        D3[Ganache: Local Blockchain]
-        D4[EMQX: MQTT Broker]
+    subgraph FastAPI 微服務
+        D1[FastAPI：IoT 控制 + 動態定價 + 區塊鏈]
+        D2[InfluxDB：IoT 時序資料]
+        D3[Ganache：區塊鏈模擬器]
+        D4[EMQX：MQTT 裝置訊息代理]
         D1 --> D2
         D1 --> D3
         D1 --> D4
     end
 
-    subgraph MessagingLayer
-        E[RabbitMQ: Topic Exchange]
+    subgraph 訊息佇列層
+        E[RabbitMQ：主題交換（Topic Exchange）]
     end
 
-    %% Communication Paths
-    A2 -->|API Calls| B
+    %% 通訊路徑
+    A2 -->|API 請求| B
     B -->|/api/v1/*| C1
     B -->|/fastapi/*| D1
     A2 -->|WebSocket| D1
-    C1 -->|Produce| E
-    D1 -->|Consume| E
-
+    C1 -->|產生訊息| E
+    D1 -->|消費訊息| E
 
 ```
 
