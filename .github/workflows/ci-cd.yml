@@ -1,0 +1,164 @@
+name: StaySync CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Docker Compose for testing
+        run: |
+          docker-compose -f docker-compose.yml up -d --build --force-recreate # Use the main docker-compose file for tests
+      - name: Wait for services to be healthy
+        timeout-minutes: 5
+        run: |
+          # Simple wait loop for services healthcheck
+          for service in laravel fastapi mysql redis rabbitmq influxdb emqx ganache; do
+            echo "Waiting for \$service to be healthy..."
+            for i in \$(seq 1 30); do # Try 30 times with 10s interval = 5 minutes
+              if docker-compose -f docker-compose.yml ps \$service | grep -q "healthy"; then
+                echo "\$service is healthy."
+                break
+              fi
+              sleep 10
+              if [ \$i -eq 30 ]; then
+                echo "\$service did not become healthy in time."
+                docker-compose -f docker-compose.yml logs \$service
+                exit 1
+              fi
+            done
+          done
+          echo "All services are healthy for testing."
+
+      - name: Run Backend (Laravel) Migrations and Seeders
+        run: |
+          docker-compose exec laravel php artisan migrate --force --seed --no-interaction
+          docker-compose exec laravel php artisan cache:clear # Clear Laravel cache after seeding
+
+      - name: Run Backend (Laravel) Tests
+        run: docker-compose exec laravel php artisan test --coverage-text
+
+      - name: Run Microservices (FastAPI) Tests
+        run: docker-compose exec fastapi pytest /app # Assuming tests are in /app or a subfolder
+
+      - name: Run Frontend (Vue) Tests
+        run: |
+          cd frontend
+          npm install # Install frontend dependencies
+          npm run test:unit # Assuming your package.json defines a unit test script
+          # npm run lint # Optional: run linting
+
+      - name: Stop Docker Compose services
+        if: always() # Ensure services are stopped even if tests fail
+        run: docker-compose down -v
+
+  build-and-push:
+    needs: test
+    if: github.ref == 'refs/heads/main' && success() # Only run if tests pass on main branch
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+      - name: Build and push Laravel image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: Dockerfile.laravel
+          push: true
+          tags: staysync/laravel:latest,staysync/laravel:${{ github.sha }}
+      - name: Build and push FastAPI image
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: Dockerfile.fastapi
+          push: true
+          tags: staysync/fastapi:latest,staysync/fastapi:${{ github.sha }}
+      - name: Build and push Frontend image (example for production build)
+        uses: docker/build-push-action@v4
+        with:
+          context: ./frontend
+          file: Dockerfile # Your frontend Dockerfile for production build
+          push: true
+          tags: staysync/frontend:latest,staysync/frontend:${{ github.sha }}
+
+  deploy-canary:
+    needs: build-and-push
+    if: github.ref == 'refs/heads/main' && success()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure Kubeconfig
+        uses: azure/setup-kubectl@v3
+        with:
+          kubeconfig: ${{ secrets.KUBECONFIG_BASE64 }} # Base64 encoded kubeconfig
+          # For other environments (e.g., GCP, AWS), use respective actions/setup-gcloud, configure-aws-credentials
+      - name: Deploy Canary version to Kubernetes
+        run: |
+          # Replace with your actual kubectl apply commands for Canary deployment
+          # This assumes you have k8s manifests in 'k8s/canary.yml'
+          kubectl apply -f k8s/canary.yml
+          echo "Deployed Canary version. Monitoring for 30 minutes for errors..."
+          # Sleep to allow monitoring systems (Sentry, Prometheus) to pick up issues
+          sleep 1800 # Wait for 30 minutes for error checks
+          
+      - name: Check Sentry for Errors in Canary
+        # This is a placeholder. You'd use Sentry API or equivalent monitoring system
+        # to check for new errors or increased error rates in the Canary deployment.
+        run: |
+          # Example: Query Sentry API (replace with your actual Sentry API access and query)
+          SENTRY_ERRORS=$(curl -s -H "Authorization: Bearer ${{ secrets.SENTRY_API_TOKEN }}" "https://sentry.io/api/0/organizations/your-org/issues/?query=is:unresolved%20level:error%20environment:canary%20lastSeen:>-30m" | jq '. | length')
+          if [ "\$SENTRY_ERRORS" -gt "0" ]; then
+              echo "Sentry reported new errors in Canary deployment. Aborting full rollout."
+              exit 1
+          fi
+          echo "Canary deployment appears stable. Proceeding to full production rollout."
+
+  deploy-production:
+    needs: deploy-canary
+    if: success() # Only deploy to production if Canary deployment was successful and without errors
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure Kubeconfig
+        uses: azure/setup-kubectl@v3
+        with:
+          kubeconfig: ${{ secrets.KUBECONFIG_BASE64 }}
+      - name: Deploy Production version to Kubernetes
+        run: |
+          # Apply the Production deployment manifest
+          kubectl apply -f k8s/production.yml
+          kubectl rollout status deployment/staysync-production # Wait for rollout to complete
+          echo "Production deployment successful."
+      - name: Run Post-Deployment Tasks (Laravel Migrations, Cache Clear, CDN Purge)
+        run: |
+          # Get a running Laravel pod name in production namespace
+          LARAVEL_POD=\$(kubectl get pods -n production -l app=laravel -o jsonpath='{.items[0].metadata.name}')
+          if [ -z "\$LARAVEL_POD" ]; then
+            echo "No Laravel pod found in production. Skipping migrations and cache clear."
+            exit 0 # Or exit 1 if this is critical
+          fi
+          
+          echo "Running migrations on \$LARAVEL_POD..."
+          kubectl exec -n production \$LARAVEL_POD -- php artisan migrate --force --no-interaction
+          
+          echo "Clearing Laravel and Redis cache on \$LARAVEL_POD..."
+          kubectl exec -n production \$LARAVEL_POD -- php artisan cache:clear
+          kubectl exec -n production \$LARAVEL_POD -- redis-cli FLUSHALL
+          
+          echo "Purging Cloudflare CDN cache..."
+          curl -X POST "https://api.cloudflare.com/client/v4/zones/${{ secrets.CLOUDFLARE_ZONE_ID }}/purge_cache" \
+               -H "Authorization: Bearer ${{ secrets.CLOUDFLARE_API_KEY }}" \
+               -H "Content-Type: application/json" \
+               --data '{"purge_everything":true}'
+          echo "Cloudflare cache purged."
+
